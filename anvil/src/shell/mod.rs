@@ -40,20 +40,20 @@ use smithay::{
     },
 };
 
+slint::include_modules!();
+
 use crate::{
     ClientState,
     state::{AnvilState, Backend},
 };
 
 mod element;
-mod grabs;
 pub(crate) mod ssd;
 #[cfg(feature = "xwayland")]
 mod x11;
 mod xdg;
 
 pub use self::element::*;
-pub use self::grabs::*;
 
 fn fullscreen_output_geometry(
     wl_surface: &WlSurface,
@@ -288,7 +288,6 @@ impl<BackendData: Backend> AnvilState<BackendData> {
 #[derive(Default)]
 pub struct SurfaceData {
     pub geometry: Option<Rectangle<i32, Logical>>,
-    pub resize_state: ResizeState,
 }
 
 fn ensure_initial_configure(surface: &WlSurface, space: &Space<WindowElement>, popups: &mut PopupManager) {
@@ -327,16 +326,13 @@ fn ensure_initial_configure(surface: &WlSurface, space: &Space<WindowElement>, p
         }
 
         with_states(surface, |states| {
-            let mut data = states
+            let _data = states
                 .data_map
                 .get::<RefCell<SurfaceData>>()
                 .unwrap()
                 .borrow_mut();
 
-            // Finish resizing.
-            if let ResizeState::WaitingForCommit(_) = data.resize_state {
-                data.resize_state = ResizeState::NotResizing;
-            }
+            
         });
 
         return;

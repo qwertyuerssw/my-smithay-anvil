@@ -99,6 +99,11 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                 self.show_window_preview = !self.show_window_preview;
             }
 
+            KeyAction::ToggleLayoutMode => {
+            self.toggle_layout_mode();
+            }
+
+
             KeyAction::ToggleDecorations => {
                 for element in self.space.elements() {
                     #[allow(irrefutable_let_patterns)]
@@ -622,7 +627,8 @@ impl<BackendData: Backend> AnvilState<BackendData> {
                     | KeyAction::Quit
                     | KeyAction::Run(_)
                     | KeyAction::TogglePreview
-                    | KeyAction::ToggleDecorations => self.process_common_key_action(action),
+                    | KeyAction::ToggleDecorations
+                    | KeyAction::ToggleLayoutMode => self.process_common_key_action(action),
 
                     _ => tracing::warn!(
                         ?action,
@@ -844,7 +850,8 @@ impl AnvilState<UdevData> {
                     | KeyAction::Quit
                     | KeyAction::Run(_)
                     | KeyAction::TogglePreview
-                    | KeyAction::ToggleDecorations => self.process_common_key_action(action),
+                    | KeyAction::ToggleDecorations
+                    | KeyAction::ToggleLayoutMode => self.process_common_key_action(action),
 
                     _ => unreachable!(),
                 },
@@ -1363,6 +1370,7 @@ enum KeyAction {
     RotateOutput,
     ToggleTint,
     ToggleDecorations,
+    ToggleLayoutMode,
     /// Do nothing more
     None,
 }
@@ -1381,6 +1389,8 @@ fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Optio
     } else if modifiers.logo && keysym == Keysym::Return {
         // run terminal
         Some(KeyAction::Run("weston-terminal".into()))
+    } else if modifiers.logo && keysym == Keysym::space { 
+        Some(KeyAction::ToggleLayoutMode)
     } else if modifiers.logo && (xkb::KEY_1..=xkb::KEY_9).contains(&keysym.raw()) {
         Some(KeyAction::Screen((keysym.raw() - xkb::KEY_1) as usize))
     } else if modifiers.logo && modifiers.shift && keysym == Keysym::M {

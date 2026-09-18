@@ -1,0 +1,85 @@
+package anvil:wm@0.1.0;
+
+interface types {
+    record point {
+        x: s32,
+        y: s32,
+    }
+
+    record size {
+        width: u32,
+        height: u32,
+    }
+
+    record rectangle {
+        x: s32,
+        y: s32,
+        width: u32,
+        height: u32,
+    }
+
+    record output-info {
+        name: string,
+        geometry: rectangle,
+        usable-area: rectangle,
+        scale: f64,
+    }
+
+    record display-context {
+        outputs: list<output-info>,
+        pointer-location: point,
+        mode: layout-mode,
+    }
+
+    record window-info {
+        id: u64,
+        title: string,
+        app-id: string,
+        min-size: option<size>,
+        max-size: option<size>,
+        is-maximized: bool,
+        is-fullscreen: bool,
+    }
+
+    record window-placement {
+        x: s32,
+        y: s32,
+        width: option<u32>,
+        height: option<u32>,
+    }
+
+    enum window-action {
+        close,
+        toggle-maximize,
+        minimize,
+    }
+
+    enum layout-mode {
+        master-stack-vertical,
+        master-stack-horizontal,
+    }
+}
+
+interface layout-engine {
+    use types.{point, rectangle, size, output-info, display-context, window-info, window-placement, window-action};
+
+    /// Главная функция тайлинга: рассчитывает геометрию для ВСЕХ окон сразу
+    calculate-layout: func(windows: list<window-info>, context: display-context) -> list<tuple<u64, window-placement>>;
+
+    /// Вызывается при создании нового окна.
+    /// Плагин возвращает желаемые координаты и (опционально) новый размер.
+    on-window-created: func(window: window-info, context: display-context) -> window-placement;
+
+    /// Вызывается при закрытии окна (для пересчета тайлинга оставшихся окон).
+    on-window-destroyed: func(window-id: u64, remaining: list<window-info>, context: display-context) -> list<tuple<u64, window-placement>>;
+
+    /// Вызывается при интерактивном перемещении окна мышью (для реализации магнита / snap-to-grid).
+    on-window-drag: func(window-id: u64, initial-pos: point, delta: point, context: display-context) -> point;
+
+    /// Вызывается при нажатии кнопок в Slint UI или хоткеев.
+    on-action: func(window-id: u64, action: window-action) -> bool;
+}
+
+world window-manager-plugin {
+    export layout-engine;
+}

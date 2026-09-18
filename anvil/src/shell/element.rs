@@ -1,4 +1,4 @@
-use std::{borrow::Cow, time::Duration};
+use std::{borrow::Cow, sync::atomic::{AtomicU64, Ordering}, time::Duration};
 
 use smithay::{
     backend::{
@@ -6,7 +6,8 @@ use smithay::{
         renderer::{
             ImportAll, ImportMem, Renderer, Texture,
             element::{
-                AsRenderElements, solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement,
+                AsRenderElements, memory::MemoryRenderBufferRenderElement,
+                surface::WaylandSurfaceRenderElement,
             },
         },
     },
@@ -25,21 +26,97 @@ use smithay::{
     },
     output::Output,
     reexports::{
-        wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
+        wayland_protocols::{
+            wp::presentation_time::server::wp_presentation_feedback,
+            xdg::shell::server::xdg_toplevel::State as XdgState,
+        },
         wayland_server::protocol::wl_surface::WlSurface,
     },
-    render_elements,
     utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Serial, user_data::UserDataMap},
-    wayland::{compositor::SurfaceData as WlSurfaceData, dmabuf::DmabufFeedback, seat::WaylandFocus},
+    wayland::{
+        compositor::{SurfaceData as WlSurfaceData, with_states},
+        dmabuf::DmabufFeedback,
+        seat::WaylandFocus,
+        shell::xdg::{SurfaceCachedState, XdgToplevelSurfaceData},
+    },
 };
 
 use super::ssd::HEADER_BAR_HEIGHT;
-use crate::{AnvilState, focus::PointerFocusTarget, state::Backend};
+use crate::{
+    AnvilState,
+    focus::PointerFocusTarget,
+    plugins::{WindowId, WindowInfo, WSize},
+    state::Backend,
+};
+
+static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowElement(pub Window);
 
 impl WindowElement {
+    /// Получение или генерация уникального идентификатора окна для WASM-плагинов
+    pub fn id(&self) -> WindowId {
+        self.user_data().insert_if_missing(|| {
+            NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed)
+        });
+        *self.user_data().get::<WindowId>().unwrap()
+    }
+
+    /// Преобразование окна Smithay в структуру WindowInfo для WASM-плагина
+    pub fn to_info(&self) -> WindowInfo {
+        let id = self.id();
+        let mut title = String::new();
+        let mut app_id = String::new();
+        let mut min_size = None;
+        let mut max_size = None;
+        let mut is_maximized = false;
+        let mut is_fullscreen = false;
+
+        if let Some(surface) = self.wl_surface() {
+            with_states(&surface, |states| {
+                // Извлекаем заголовок и App ID
+                if let Some(role_data) = states.data_map.get::<XdgToplevelSurfaceData>() {
+                    let guard = role_data.lock().unwrap();
+                    title = guard.title.clone().unwrap_or_default();
+                    app_id = guard.app_id.clone().unwrap_or_default();
+                }
+
+                // Извлекаем ограничения размеров (min_size / max_size)
+                let mut cached = states.cached_state.get::<SurfaceCachedState>();
+                let current = cached.current();
+
+                min_size = (current.min_size.w > 0 || current.min_size.h > 0).then_some(WSize {
+                    width: current.min_size.w.max(0) as u32,
+                    height: current.min_size.h.max(0) as u32,
+                });
+
+                max_size = (current.max_size.w > 0 || current.max_size.h > 0).then_some(WSize {
+                    width: current.max_size.w.max(0) as u32,
+                    height: current.max_size.h.max(0) as u32,
+                });
+            });
+        }
+
+        // Извлекаем флаги состояний (Maximized / Fullscreen)
+        if let Some(toplevel) = self.0.toplevel() {
+            toplevel.with_pending_state(|state| {
+                is_maximized = state.states.contains(XdgState::Maximized);
+                is_fullscreen = state.states.contains(XdgState::Fullscreen);
+            });
+        }
+
+        WindowInfo {
+            id,
+            title,
+            app_id,
+            min_size,
+            max_size,
+            is_maximized,
+            is_fullscreen,
+        }
+    }
+
     pub fn surface_under(
         &self,
         location: Point<f64, Logical>,
@@ -175,6 +252,7 @@ impl<BackendData: Backend> PointerTarget<AnvilState<BackendData>> for SSD {
             state.header_bar.pointer_enter(event.location);
         }
     }
+
     fn motion(
         &self,
         _seat: &Seat<AnvilState<BackendData>>,
@@ -186,6 +264,7 @@ impl<BackendData: Backend> PointerTarget<AnvilState<BackendData>> for SSD {
             state.header_bar.pointer_enter(event.location);
         }
     }
+
     fn relative_motion(
         &self,
         _seat: &Seat<AnvilState<BackendData>>,
@@ -193,6 +272,7 @@ impl<BackendData: Backend> PointerTarget<AnvilState<BackendData>> for SSD {
         _event: &RelativeMotionEvent,
     ) {
     }
+
     fn button(
         &self,
         seat: &Seat<AnvilState<BackendData>>,
@@ -204,6 +284,7 @@ impl<BackendData: Backend> PointerTarget<AnvilState<BackendData>> for SSD {
             state.header_bar.clicked(seat, data, &self.0, event.serial);
         }
     }
+
     fn axis(
         &self,
         _seat: &Seat<AnvilState<BackendData>>,
@@ -211,7 +292,9 @@ impl<BackendData: Backend> PointerTarget<AnvilState<BackendData>> for SSD {
         _frame: AxisFrame,
     ) {
     }
+
     fn frame(&self, _seat: &Seat<AnvilState<BackendData>>, _data: &mut AnvilState<BackendData>) {}
+
     fn leave(
         &self,
         _seat: &Seat<AnvilState<BackendData>>,
@@ -224,6 +307,7 @@ impl<BackendData: Backend> PointerTarget<AnvilState<BackendData>> for SSD {
             state.header_bar.pointer_leave();
         }
     }
+
     fn gesture_swipe_begin(
         &self,
         _seat: &Seat<AnvilState<BackendData>>,
@@ -357,8 +441,6 @@ impl<BackendData: Backend> TouchTarget<AnvilState<BackendData>> for SSD {
         _seat: &Seat<AnvilState<BackendData>>,
         _data: &mut AnvilState<BackendData>,
     ) -> Option<FrameMarker> {
-        // It would be more correct to store the marker on frame and cancel,
-        // but since we're ignoring those anyway, no need for the added complexity.
         None
     }
 }
@@ -465,6 +547,7 @@ impl SpaceElement for WindowElement {
         }
         geo
     }
+
     fn bbox(&self) -> Rectangle<i32, Logical> {
         let mut bbox = SpaceElement::bbox(&self.0);
         if self.decoration_state().is_ssd {
@@ -472,6 +555,7 @@ impl SpaceElement for WindowElement {
         }
         bbox
     }
+
     fn is_in_input_region(&self, point: &Point<f64, Logical>) -> bool {
         if self.decoration_state().is_ssd {
             point.y < HEADER_BAR_HEIGHT as f64
@@ -483,6 +567,7 @@ impl SpaceElement for WindowElement {
             SpaceElement::is_in_input_region(&self.0, point)
         }
     }
+
     fn z_index(&self) -> u8 {
         SpaceElement::z_index(&self.0)
     }
@@ -490,22 +575,25 @@ impl SpaceElement for WindowElement {
     fn set_activate(&self, activated: bool) {
         SpaceElement::set_activate(&self.0, activated);
     }
+
     fn output_enter(&self, output: &Output, overlap: Rectangle<i32, Logical>) {
         SpaceElement::output_enter(&self.0, output, overlap);
     }
+
     fn output_leave(&self, output: &Output) {
         SpaceElement::output_leave(&self.0, output);
     }
+
     #[profiling::function]
     fn refresh(&self) {
         SpaceElement::refresh(&self.0);
     }
 }
 
-render_elements!(
+smithay::render_elements!(
     pub WindowRenderElement<R> where R: ImportAll + ImportMem;
     Window=WaylandSurfaceRenderElement<R>,
-    Decoration=SolidColorRenderElement,
+    Decoration=MemoryRenderBufferRenderElement<R>,
 );
 
 impl<R: Renderer> std::fmt::Debug for WindowRenderElement<R> {
@@ -521,7 +609,7 @@ impl<R: Renderer> std::fmt::Debug for WindowRenderElement<R> {
 impl<R> AsRenderElements<R> for WindowElement
 where
     R: Renderer + ImportAll + ImportMem,
-    R::TextureId: Clone + Texture + 'static,
+    R::TextureId: Clone + Texture + Send + 'static,
 {
     type RenderElement = WindowRenderElement<R>;
 
@@ -540,14 +628,25 @@ where
             let mut state = self.decoration_state();
             let width = window_geo.size.w;
             state.header_bar.redraw(width as u32);
-            let mut vec = AsRenderElements::<R>::render_elements::<WindowRenderElement<R>>(
-                &state.header_bar,
-                renderer,
-                location,
-                scale,
-                alpha,
-            );
 
+            let mut vec = Vec::new();
+
+            // Рендерим буфер Slint UI шапки:
+            if let Some(buffer) = state.header_bar.buffer.as_ref() {
+                if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    location.to_f64(),
+                    buffer,
+                    None,
+                    None,
+                    None,
+                    smithay::backend::renderer::element::Kind::Unspecified,
+                ) {
+                    vec.push(WindowRenderElement::Decoration(elem));
+                }
+            }
+
+            // Сдвигаем основное содержимое окна Wayland вниз под шапку:
             location.y += (scale.y * HEADER_BAR_HEIGHT as f64) as i32;
 
             let window_elements =

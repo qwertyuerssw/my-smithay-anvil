@@ -1,0 +1,140 @@
+// Круглая кнопка закрытия в точности как в Libadwaita
+component AdwCloseButton inherits Rectangle {
+    in property <bool> is-active: true;
+    callback clicked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: 12px;
+
+    // Круглая подложка в Adwaita видна всегда
+    background: !root.is-active ? #ffffff0d
+              : touch.pressed ? #ffffff35
+              : touch.has-hover ? #ffffff26
+              : #ffffff18;
+
+    animate background { duration: 120ms; easing: ease-out; }
+
+    // Жирный векторный крестик
+    Path {
+        width: 8px;
+        height: 8px;
+        stroke-width: 2px;
+        stroke: !root.is-active ? #777777 
+              : touch.has-hover ? #ffffff 
+              : #f0f0f0;
+        
+        MoveTo { x: 0; y: 0; }
+        LineTo { x: 8; y: 8; }
+        MoveTo { x: 8; y: 0; }
+        LineTo { x: 0; y: 8; }
+
+        animate stroke { duration: 120ms; }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Круглая кнопка разворачивания в том же стиле
+component AdwMaximizeButton inherits Rectangle {
+    in property <bool> is-active: true;
+    callback clicked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: 12px;
+
+    background: !root.is-active ? #ffffff0d
+              : touch.pressed ? #ffffff35
+              : touch.has-hover ? #ffffff26
+              : #ffffff18;
+
+    animate background { duration: 120ms; easing: ease-out; }
+
+    Rectangle {
+        width: 8px;
+        height: 8px;
+        border-width: 2px;
+        border-radius: 1.5px;
+        border-color: !root.is-active ? #777777 
+                    : touch.has-hover ? #ffffff 
+                    : #f0f0f0;
+        background: transparent;
+
+        animate border-color { duration: 120ms; }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component WindowHeader inherits Window {
+    in property <length> header-width;
+    in property <bool> is-active: true;
+    
+    title: "Header Bar";
+    
+    callback close-clicked();
+    callback maximize-clicked();
+
+    width: header-width;
+    height: 48px;
+    background: transparent;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: root.is-active ? #2e2e32 : #242426;
+        
+        // Скругление верхних углов шапки (как в GNOME)
+        border-top-left-radius: 12px;
+        border-top-right-radius: 12px;
+        clip: true;
+
+        animate background { duration: 200ms; }
+
+        // Тонкий нижний разделитель
+        Rectangle {
+            y: parent.height - 1px;
+            width: 100%;
+            height: 1px;
+            background: #ffffff0d;
+        }
+
+        // Заголовок точно по центру
+        Text {
+            x: 0;
+            y: 0;
+            width: 100%;
+            height: 100%;
+            text: root.title;
+            color: root.is-active ? #ffffff : #7c7c7f;
+            font-size: 14px;
+            font-weight: 700;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+
+            animate color { duration: 200ms; }
+        }
+
+        // Блок кнопок справа
+        HorizontalLayout {
+            alignment: end;
+            padding-right: 12px;
+            spacing: 8px;
+
+            AdwMaximizeButton {
+                is-active: root.is-active;
+                clicked => { root.maximize-clicked(); }
+            }
+
+            AdwCloseButton {
+                is-active: root.is-active;
+                clicked => { root.close-clicked(); }
+            }
+        }
+    }
+}

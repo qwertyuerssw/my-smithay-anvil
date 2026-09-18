@@ -137,7 +137,9 @@ impl PointerAxisEvent<WinitInput> for WinitMouseWheelEvent {
         match self.delta {
             MouseScrollDelta::LineDelta(_, _) => AxisSource::Wheel,
             MouseScrollDelta::PixelDelta(_) => AxisSource::Continuous,
+            _ => AxisSource::Continuous,
         }
+
     }
 
     fn amount(&self, axis: Axis) -> Option<f64> {
@@ -145,6 +147,7 @@ impl PointerAxisEvent<WinitInput> for WinitMouseWheelEvent {
             (Axis::Horizontal, MouseScrollDelta::PixelDelta(delta)) => Some(-delta.x),
             (Axis::Vertical, MouseScrollDelta::PixelDelta(delta)) => Some(-delta.y),
             (_, MouseScrollDelta::LineDelta(_, _)) => None,
+            _ => None,
         }
     }
 
@@ -154,6 +157,7 @@ impl PointerAxisEvent<WinitInput> for WinitMouseWheelEvent {
             (Axis::Horizontal, MouseScrollDelta::LineDelta(x, _)) => Some(-x as f64 * 120.),
             (Axis::Vertical, MouseScrollDelta::LineDelta(_, y)) => Some(-y as f64 * 120.),
             (_, MouseScrollDelta::PixelDelta(_)) => None,
+            _ => None,
         }
     }
 

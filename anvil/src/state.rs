@@ -1,3 +1,7 @@
+use crate::plugins::{DisplayContext, OutputInfo, PluginManager};
+
+use crate::plugins::LayoutMode;
+
 #[cfg(feature = "xwayland")]
 use std::os::unix::io::OwnedFd;
 use std::{
@@ -140,6 +144,11 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     // desktop
     pub space: Space<WindowElement>,
     pub popups: PopupManager,
+
+    // WIT Plugins
+    pub plugin_manager: Option<PluginManager>,
+
+    pub current_layout_mode: LayoutMode,
 
     // smithay state
     pub compositor_state: CompositorState,
@@ -389,9 +398,6 @@ impl<BackendData: Backend> PointerConstraintsHandler for AnvilState<BackendData>
         pointer: &PointerHandle<Self>,
         constraint_remove: ConstraintRemove,
     ) {
-        // Clear cursor_position_hint to prevent a oneshot PointerLocked constraint
-        // from causing this function to be called again during PointerLeave and
-        // unexpectedly changing the cursor position.
         let Some((hint_surface, hint_location)) = self.cursor_position_hint.take() else {
             return;
         };
@@ -463,7 +469,6 @@ impl<BackendData: Backend> XdgActivationHandler for AnvilState<BackendData> {
         surface: WlSurface,
     ) {
         if token_data.timestamp.elapsed().as_secs() < 10 {
-            // Just grant the wish
             let w = self
                 .space
                 .elements()
@@ -479,7 +484,6 @@ impl<BackendData: Backend> XdgActivationHandler for AnvilState<BackendData> {
 impl<BackendData: Backend> XdgDecorationHandler for AnvilState<BackendData> {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         use xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
-        // Set the default to client side
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(Mode::ClientSide);
         });
@@ -515,17 +519,6 @@ impl<BackendData: Backend> FractionalScaleHandler for AnvilState<BackendData> {
         &mut self,
         surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     ) {
-        // Here we can set the initial fractional scale
-        //
-        // First we look if the surface already has a primary scan-out output, if not
-        // we test if the surface is a subsurface and try to use the primary scan-out output
-        // of the root surface. If the root also has no primary scan-out output we just try
-        // to use the first output of the toplevel.
-        // If the surface is the root we also try to use the first output of the toplevel.
-        //
-        // If all the above tests do not lead to a output we just use the first output
-        // of the space (which in case of anvil will also be the output a toplevel will
-        // initially be placed on)
         #[allow(clippy::redundant_clone)]
         let mut root = surface.clone();
         while let Some(parent) = get_parent(&root) {
@@ -595,9 +588,7 @@ impl<BackendData: Backend> XdgForeignHandler for AnvilState<BackendData> {
 }
 
 impl<BackendData: Backend> ImageCaptureSourceHandler for AnvilState<BackendData> {
-    fn source_destroyed(&mut self, _source: ImageCaptureSource) {
-        // Anvil doesn't track sources
-    }
+    fn source_destroyed(&mut self, _source: ImageCaptureSource) {}
 }
 
 impl<BackendData: Backend> OutputCaptureSourceHandler for AnvilState<BackendData> {
@@ -635,12 +626,9 @@ impl<BackendData: Backend> ImageCopyCaptureHandler for AnvilState<BackendData> {
         })
     }
 
-    fn new_session(&mut self, _session: Session) {
-        // Anvil doesn't track sessions; they clean up on drop
-    }
+    fn new_session(&mut self, _session: Session) {}
 
     fn frame(&mut self, _session: &SessionRef, frame: Frame) {
-        // Anvil doesn't implement actual capture
         frame.fail(smithay::wayland::image_copy_capture::CaptureFailureReason::Unknown);
     }
 }
@@ -654,8 +642,51 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         backend_data: BackendData,
         listen_on_socket: bool,
     ) -> AnvilState<BackendData> {
-        let dh = display.handle();
 
+        // 1. Папка плагинов: ANVIL_PLUGINS_DIR -> ~/.config/anvil/plugins -> ./plugins
+        let plugins_dir = std::env::var("ANVIL_PLUGINS_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                if let Ok(home) = std::env::var("HOME") {
+                    std::path::PathBuf::from(home).join(".config").join("anvil").join("plugins")
+                } else {
+                    std::path::PathBuf::from("plugins")
+                }
+            });
+
+        let _ = std::fs::create_dir_all(&plugins_dir);
+        let canonical_dir = plugins_dir.canonicalize().unwrap_or_else(|_| plugins_dir.clone());
+        tracing::info!("🔍 Plugin Manager directory: {:?}", canonical_dir);
+
+        // 2. Инициализация менеджера плагинов
+        let mut plugin_manager = match PluginManager::new(&canonical_dir) {
+            Ok(manager) => Some(manager),
+            Err(err) => {
+                tracing::warn!("⚠️ Failed to initialize plugin manager from {:?}: {:?}", canonical_dir, err);
+                None
+            }
+        };
+
+        // 3. Поиск и загрузка активного .wasm плагина
+        if let Some(pm) = plugin_manager.as_mut() {
+            let available = pm.list_available_plugins();
+            tracing::info!("📦 Available plugins found: {:?}", available);
+
+            let target_plugin = std::env::var("ANVIL_PLUGIN")
+                .ok()
+                .or_else(|| available.first().cloned());
+
+            if let Some(plugin_name) = target_plugin {
+                match pm.load_plugin(&plugin_name) {
+                    Ok(_) => tracing::info!("🚀 Successfully loaded plugin: '{}'", plugin_name),
+                    Err(err) => tracing::error!("❌ Failed to load plugin '{}': {:?}", plugin_name, err),
+                }
+            } else {
+                tracing::warn!("⚠️ No .wasm plugins found in {:?}", canonical_dir);
+            }
+        }
+
+        let dh = display.handle();
         let clock = Clock::new();
 
         // init wayland clients
@@ -682,7 +713,6 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 Generic::new(display, Interest::READ, Mode::Level),
                 |_, display, data| {
                     profiling::scope!("dispatch_clients");
-                    // Safety: we don't drop the display
                     unsafe {
                         display.get_mut().dispatch_clients(data).unwrap();
                     }
@@ -714,7 +744,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         TextInputManagerState::new::<Self>(&dh);
         InputMethodManagerState::new::<Self, _>(&dh, |_client| true);
         VirtualKeyboardManagerState::new::<Self, _>(&dh, |_client| true);
-        // Expose global only if backend supports relative motion events
+        
         if BackendData::HAS_RELATIVE_MOTION {
             RelativePointerManagerState::new::<Self>(&dh);
         }
@@ -730,12 +760,10 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         });
         FixesState::new::<Self>(&dh);
 
-        // Image capture protocols (screencopy)
         let image_capture_source_state = ImageCaptureSourceState::new();
         let output_capture_source_state = OutputCaptureSourceState::new::<Self>(&dh);
         let image_copy_capture_state = ImageCopyCaptureState::new::<Self>(&dh);
 
-        // init input
         let seat_name = backend_data.seat_name();
         let mut seat = seat_state.new_wl_seat(&dh, seat_name.clone());
 
@@ -752,6 +780,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
         XWaylandKeyboardGrabState::new::<Self>(&dh.clone());
 
         AnvilState {
+            current_layout_mode: crate::plugins::LayoutMode::MasterStackVertical,
             backend_data,
             display_handle: dh,
             socket_name,
@@ -759,6 +788,7 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             handle,
             space: Space::default(),
             popups: PopupManager::default(),
+            plugin_manager,
             compositor_state,
             data_device_state,
             layer_shell_state,
@@ -801,6 +831,23 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             show_window_preview: false,
         }
     }
+
+    pub fn toggle_layout_mode(&mut self) {
+        use crate::plugins::LayoutMode;
+
+        // 1. Меняем значение в состоянии
+        self.current_layout_mode = match self.current_layout_mode {
+            LayoutMode::MasterStackVertical => LayoutMode::MasterStackHorizontal,
+            LayoutMode::MasterStackHorizontal => LayoutMode::MasterStackVertical,
+        };
+
+        tracing::info!("🔄 Switched layout mode to: {:?}", self.current_layout_mode);
+
+        // 2. Говорим окнам перестроиться!
+        // reapply_layout внутри вызовет display_context(), который уже подтянет НОВЫЙ mode!
+        self.reapply_layout();
+    }
+
 
     #[cfg(feature = "xwayland")]
     pub fn start_xwayland(&mut self) {
@@ -857,9 +904,73 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             tracing::error!("Failed to insert the XWaylandSource into the event loop: {}", e);
         }
     }
-}
 
-impl<BackendData: Backend + 'static> AnvilState<BackendData> {
+    /// Применяет тайлинг плагина ко всем открытым окнам
+    pub fn reapply_layout(&mut self) {
+        let windows: Vec<_> = self.space.elements().cloned().collect();
+        if windows.is_empty() {
+            return;
+        }
+
+        let window_infos: Vec<_> = windows.iter().map(|w| w.to_info()).collect();
+        let context = self.display_context();
+
+        if let Some(pm) = self.plugin_manager.as_mut() {
+            if let Ok(placements) = pm.calculate_layout(window_infos, context) {
+                for (window_id, placement) in placements {
+                    if let Some(window) = windows.iter().find(|w| w.id() == window_id) {
+                        let new_loc = (placement.x, placement.y);
+                        
+                        // Двигаем окно только если координаты изменились
+                        if self.space.element_location(window) != Some(new_loc.into()) {
+                            self.space.map_element(window.clone(), new_loc, false);
+                        }
+
+                        // Посылаем resize только если запрошен конкретный размер
+                        if let (Some(w), Some(h)) = (placement.width, placement.height) {
+                            if let Some(toplevel) = window.0.toplevel() {
+                                let current_size = window.geometry().size;
+                                if current_size.w != w as i32 || current_size.h != h as i32 {
+                                    toplevel.with_pending_state(|state| {
+                                        state.size = Some((w as i32, h as i32).into());
+                                    });
+                                    toplevel.send_pending_configure();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Формирует актуальный снимок мониторов, чистых зон (без панелей) и курсора
+    pub fn display_context(&self) -> DisplayContext {
+        let outputs = self
+            .space
+            .outputs()
+            .filter_map(|o| {
+                let geo = self.space.output_geometry(o)?;
+                let map = smithay::desktop::layer_map_for_output(o);
+                let zone = map.non_exclusive_zone();
+                let usable_area = Rectangle::new(geo.loc + zone.loc, zone.size);
+
+                Some(OutputInfo {
+                    name: o.name(),
+                    geometry: geo.into(),
+                    usable_area: usable_area.into(),
+                    scale: o.current_scale().fractional_scale(),
+                })
+            })
+            .collect();
+
+        DisplayContext {
+            mode: self.current_layout_mode,
+            outputs,
+            pointer_location: self.pointer.current_location().into(),
+        }
+    }
+
     pub fn pre_repaint(&mut self, output: &Output, frame_target: impl Into<Time<Monotonic>>) {
         let frame_target = frame_target.into();
 
@@ -893,8 +1004,6 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 }
             });
         }
-        // Drop the lock to the layer map before calling blocker_cleared, which might end up
-        // calling the commit handler which in turn again could access the layer map.
         std::mem::drop(map);
 
         if let CursorImageStatus::Surface(ref surface) = self.cursor_status {
@@ -1031,8 +1140,6 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 });
             }
         }
-        // Drop the lock to the layer map before calling blocker_cleared, which might end up
-        // calling the commit handler which in turn again could access the layer map.
         std::mem::drop(map);
 
         if let CursorImageStatus::Surface(ref surface) = self.cursor_status {

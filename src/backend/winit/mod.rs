@@ -558,6 +558,7 @@ impl<F: FnMut(WinitEvent)> ApplicationHandler for WinitEventLoopApp<'_, F> {
                     // TODO Handle tablet events
                     PointerSource::TabletTool { .. } => {}
                     PointerSource::Unknown => {}
+                    _ => {}
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -630,6 +631,7 @@ impl<F: FnMut(WinitEvent)> ApplicationHandler for WinitEventLoopApp<'_, F> {
                     // TODO Handle tablet events
                     ButtonSource::TabletTool { .. } => {}
                     ButtonSource::Unknown(_) => {}
+                    _ => {},
                 }
             }
             WindowEvent::PointerLeft {
@@ -652,7 +654,6 @@ impl<F: FnMut(WinitEvent)> ApplicationHandler for WinitEventLoopApp<'_, F> {
             | WindowEvent::KeyboardInput { .. }
             | WindowEvent::DragEntered { .. }
             | WindowEvent::DragLeft { .. }
-            | WindowEvent::DragMoved { .. }
             | WindowEvent::Ime(_)
             | WindowEvent::Moved(_)
             | WindowEvent::Occluded(_)
@@ -663,6 +664,7 @@ impl<F: FnMut(WinitEvent)> ApplicationHandler for WinitEventLoopApp<'_, F> {
             | WindowEvent::RotationGesture { .. }
             | WindowEvent::PanGesture { .. }
             | WindowEvent::ActivationTokenDone { .. } => (),
+            _ => (),
         }
     }
 }

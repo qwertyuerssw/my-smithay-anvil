@@ -14,6 +14,7 @@ pub mod focus;
 pub mod input_handler;
 #[cfg(feature = "libei")]
 pub mod libei;
+pub mod plugins;
 pub mod render;
 pub mod shell;
 pub mod state;
